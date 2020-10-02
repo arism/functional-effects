@@ -187,12 +187,13 @@ object TailRecursive extends App {
    * Make this infinite loop (which represents a webserver) effectfully tail
    * recursive.
    */
-  lazy val webserver: Task[Nothing] =
-    (for {
-      request  <- acceptRequest
-      response <- handleRequest(request)
-      nothing        <- request.returnResponse(response)
-    } yield nothing) *> webserver
+  lazy val webserver: Task[Nothing] = {
+    acceptRequest.flatMap{ request =>
+      handleRequest(request).flatMap{ response =>
+        request.returnResponse(response)
+      }
+    } *> webserver
+  }
 
   def run(args: List[String]): ZIO[ZEnv, Nothing, ExitCode] =
     (for {
