@@ -3,8 +3,7 @@ package net.degoes.zio
 import zio._
 import java.text.NumberFormat
 import java.nio.charset.StandardCharsets
-import java.nio.file.Files
-import java.nio.file.Path
+import java.nio.file.{Files, Path, Paths}
 
 object Cat extends App {
   import zio.console._
@@ -18,7 +17,9 @@ object Cat extends App {
    * blocking thread pool, storing the result into a string.
    */
   def readFile(file: String): ZIO[Blocking, IOException, String] =
-    ???
+    effectBlockingIO{
+      new String(Files.readAllBytes(Paths.get(file)))
+    }
 
   /**
    * EXERCISE
@@ -27,7 +28,11 @@ object Cat extends App {
    * contents of the specified file to standard output.
    */
   def run(args: List[String]): ZIO[ZEnv, Nothing, ExitCode] =
-    ???
+    if(args.isEmpty){
+      putStrLn("usage: cat [file]").exitCode
+    }else{
+      readFile(args.head).flatMap(putStrLn(_)).exitCode
+    }
 }
 
 object CatEnsuring extends App {
@@ -52,7 +57,7 @@ object CatEnsuring extends App {
     ZIO.uninterruptible {
       for {
         source   <- open(file)
-        contents <- ZIO.effect(source.getLines().mkString("\n"))
+        contents <- ZIO.effect(source.getLines().mkString("\n")).ensuring(close(source).orDie)
       } yield contents
     }.refineToOrDie[IOException]
 
@@ -85,7 +90,7 @@ object CatBracket extends App {
    * fail to close the file, no matter what happens during reading.
    */
   def readFile(file: String): ZIO[Blocking, IOException, String] =
-    ???
+    open(file).bracket(close(_).orDie,source => effectBlockingIO(source.getLines().mkString("\n")))
 
   def run(args: List[String]): ZIO[ZEnv, Nothing, ExitCode] =
     (for {
@@ -127,7 +132,7 @@ object SourceManaged extends App {
       val close: ZSource => ZIO[Blocking, Nothing, Unit] =
         _.execute(_.close()).orDie
 
-      ???
+      ZManaged.make(open)(close)
     }
   }
 
@@ -140,8 +145,12 @@ object SourceManaged extends App {
    */
   def readFiles(
     files: List[String]
-  ): ZIO[Blocking with Console, IOException, List[String]] = ???
-
+  ): ZIO[Blocking with Console, IOException, List[String]] =
+    ZManaged.foreachPar(files)(ZSource.make).use{ zsources =>
+      ZIO.foreach(zsources){ zsource =>
+        zsource.execute(_.getLines().mkString("\n"))
+      }
+    }
   /**
    * EXERCISE
    *
@@ -151,7 +160,7 @@ object SourceManaged extends App {
    * anything except an error message.
    */
   def run(args: List[String]): ZIO[ZEnv, Nothing, ExitCode] =
-    ???
+    readFiles(args.distinct).flatMap(ZIO.foreach(_)(putStrLn(_))).exitCode
 }
 
 object CatIncremental extends App {
@@ -160,9 +169,9 @@ object CatIncremental extends App {
   import java.io.{ FileInputStream, IOException, InputStream }
 
   final case class FileHandle private (private val is: InputStream) {
-    final def close: ZIO[Blocking, IOException, Unit] = effectBlockingIO(is.close())
+     def close: ZIO[Blocking, IOException, Unit] = effectBlockingIO(is.close())
 
-    final def read: ZIO[Blocking, IOException, Option[Chunk[Byte]]] =
+     def read: ZIO[Blocking, IOException, Option[Chunk[Byte]]] =
       effectBlockingIO {
         val array = Array.ofDim[Byte](1024)
         val len   = is.read(array)
@@ -189,7 +198,10 @@ object CatIncremental extends App {
    * a time, stopping when there are no more chunks left.
    */
   def cat(fh: FileHandle): ZIO[Blocking with Console, IOException, Unit] =
-    ???
+    fh.read.flatMap{
+      case Some(chunk)  => putStr(chunk.map(_.toChar).mkString) *> cat(fh)
+      case _ => ZIO.succeed()
+    }
 
   /**
    * EXERCISE
@@ -200,15 +212,8 @@ object CatIncremental extends App {
    */
   def run(args: List[String]): ZIO[ZEnv, Nothing, ExitCode] =
     args match {
-      case _ :: Nil =>
-        /**
-         * EXERCISE
-         *
-         * Open the specified file, safely create and use a file handle to
-         * incrementally dump the contents of the file to standard output.
-         */
-        ???
-
+      case fileName :: Nil =>
+        ZManaged.make(FileHandle.open(fileName))(_.close.orDie).use(cat).exitCode
       case _ => putStrLn("Usage: cat <file>") as ExitCode(2)
     }
 }
